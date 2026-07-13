@@ -1,0 +1,174 @@
+# ============================================================
+# FlashLink Docker Compose 部署文件
+# 针对 2c2g 云服务器优化（1.6Gi 总内存 / 1.1Gi 可用）
+#
+# 内存分配方案（无 Swap，必须严格限制）：
+#   App    (JVM 256MB 堆 + 开销) → 480MB 限制
+#   MySQL  (InnoDB 96MB 缓冲池) → 320MB 限制
+#   Redis  (maxmemory 48MB)      →  80MB 限制
+#   ────────────────────────────────────────
+#   合计                         → 880MB（留 250MB 给 OS）
+#
+# 启动：docker compose up -d
+# 查看：docker compose logs -f flashlink
+# 停止：docker compose down
+# ============================================================
+
+services:
+  # ======================== 应用服务 ========================
+  flashlink:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flashlink:latest
+    container_name: flashlink-app
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:8080"
+      - "${MANAGEMENT_PORT:-8081}:8081"
+    environment:
+      # 数据库连接（docker-compose 内通过服务名访问）
+      DB_HOST: ${DB_HOST:-mysql}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME:-flash_link}
+      DB_USERNAME: ${DB_USERNAME:-flashlink}
+      DB_PASSWORD: ${DB_PASSWORD:-FlashLink@2024}
+      # Redis 连接
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-RedisPass@2024}
+      REDIS_DATABASE: ${REDIS_DATABASE:-0}
+      # 功能开关
+      SWAGGER_ENABLED: ${SWAGGER_ENABLED:-false}
+      PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
+      # JVM 参数（低内存优化：SerialGC + 固定堆）
+      JAVA_OPTS: "-Xms256m -Xmx256m -XX:+UseSerialGC -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -XX:+UseContainerSupport -XX:+ExitOnOutOfMemoryError -Duser.timezone=Asia/Shanghai"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/actuator/health/readiness"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    # 资源限制：JVM 256MB 堆 + 128MB 元空间 + 栈/堆外 ≈ 480MB
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: ${APP_MEM_LIMIT:-480m}
+        reservations:
+          cpus: "0.5"
+          memory: ${APP_MEM_RESERVE:-320m}
+    networks:
+      - flashlink-net
+
+  # ======================== MySQL 数据库 ========================
+  mysql:
+    image: mysql:8.4.10
+    container_name: flashlink-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-RootPass@2024}
+      MYSQL_DATABASE: ${DB_NAME:-flash_link}
+      MYSQL_USER: ${DB_USERNAME:-flashlink}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-FlashLink@2024}
+      TZ: Asia/Shanghai
+    # ports:
+      # 仅本地调试用，生产建议注释掉
+      # - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 容器首次启动时自动执行建表 SQL
+      - ./src/main/resources/flash_link_v1.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    command:
+      # MySQL 8 低内存优化参数（320MB 容器限制下的最后防线）
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+      # 内存调优：针对 320MB 容器极限压榨
+      - --innodb-buffer-pool-size=96M            # InnoDB 缓冲池，不能再低
+      - --innodb-log-buffer-size=8M
+      - --innodb-buffer-pool-instances=1          # 单实例减少开销
+      - --max-connections=80                      # 最大连接数
+      - --performance-schema=OFF                  # 关闭性能模式，省 50M+
+      - --skip-name-resolve                       # 跳过 DNS 解析
+      - --table-open-cache=128
+      - --table-definition-cache=128
+      - --thread-cache-size=4
+      - --sort-buffer-size=256K                   # 排序缓冲区最小化
+      - --join-buffer-size=128K
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-RootPass@2024}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.8"
+          memory: ${MYSQL_MEM_LIMIT:-320m}
+        reservations:
+          cpus: "0.3"
+          memory: ${MYSQL_MEM_RESERVE:-240m}
+    networks:
+      - flashlink-net
+
+  # ======================== Redis 缓存 ========================
+  redis:
+    image: redis:7.4.9-alpine
+    container_name: flashlink-redis
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    command:
+      - redis-server
+      - --requirepass ${REDIS_PASSWORD:-RedisPass@2024}
+      - --maxmemory 48mb                      # 最大内存：短链码缓存量不大，48MB 够用
+      - --maxmemory-policy volatile-lru       # 逐出策略：优先淘汰带 TTL 的 key
+      - --save ""                             # 禁用 RDB（数据可重建，省内存省 IO）
+      - --appendonly no                       # 禁用 AOF
+      - --databases 16
+      - --maxclients 300
+      - --tcp-backlog 64
+      - --hz 10                               # 降低后台任务频率省 CPU
+    ports:
+      # 仅本地调试用，生产建议注释掉
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-RedisPass@2024}", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: ${REDIS_MEM_LIMIT:-80m}
+        reservations:
+          cpus: "0.1"
+          memory: ${REDIS_MEM_RESERVE:-32m}
+    networks:
+      - flashlink-net
+
+# ======================== 数据卷 ========================
+volumes:
+  mysql-data:
+    driver: local
+    name: flashlink-mysql-data
+  redis-data:
+    driver: local
+    name: flashlink-redis-data
+
+# ======================== 网络 ========================
+networks:
+  flashlink-net:
+    driver: bridge
+    name: flashlink-net

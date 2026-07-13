@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FlashLink - 短链生成器</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+</head>
+<body>
+    <div class="grid-bg"></div>
+
+    <!-- 顶栏 -->
+    <header class="header">
+        <div class="header-inner">
+            <div class="logo">
+                <span class="logo-icon">⚡</span>
+                <span class="logo-text">FlashLink</span>
+            </div>
+            <p class="header-subtitle">极速短链生成器</p>
+        </div>
+    </header>
+
+    <main class="main">
+        <!-- 生成短链区域 -->
+        <section class="card">
+            <h2 class="card-title">
+                <span class="card-icon">🔗</span>
+                生成短链
+            </h2>
+
+            <div class="input-group">
+                <input type="url" id="originalUrl" class="input" placeholder="请输入需要缩短的链接，如 https://example.com/very-long-url" autocomplete="off">
+            </div>
+
+            <div class="expire-section">
+                <label class="expire-label">过期时间</label>
+                <div class="expire-buttons">
+                    <button class="expire-btn active" data-value="1h">1小时</button>
+                    <button class="expire-btn" data-value="1d">1天</button>
+                    <button class="expire-btn" data-value="7d">7天</button>
+                    <button class="expire-btn" data-value="30d">30天</button>
+                    <button class="expire-btn" data-value="never">永不过期</button>
+                    <button class="expire-btn" data-value="custom">自定义</button>
+                </div>
+                <input type="datetime-local" id="customExpire" class="input custom-date hidden" placeholder="选择过期时间">
+            </div>
+
+            <button class="btn btn-primary" id="generateBtn" onclick="generateShortLink()">
+                <span class="btn-text">生成短链</span>
+                <span class="btn-loading hidden">
+                    <span class="spinner"></span>
+                    生成中...
+                </span>
+            </button>
+
+            <!-- 生成结果 -->
+            <div class="result hidden" id="result">
+                <label class="result-label">生成结果</label>
+                <div class="result-box">
+                    <span class="result-code" id="resultCode"></span>
+                    <button class="btn btn-copy" onclick="copyResult()">复制</button>
+                </div>
+                <div class="result-full" id="resultFull"></div>
+            </div>
+        </section>
+
+        <!-- 短链跳转区域 -->
+        <section class="card">
+            <h2 class="card-title">
+                <span class="card-icon">🚀</span>
+                短链跳转
+            </h2>
+            <p class="card-desc">输入短码或完整短链，直接跳转到目标页面</p>
+
+            <div class="input-group">
+                <input type="text" id="shortCodeInput" class="input" placeholder="输入短码，如 2TD6pyi6BbE" autocomplete="off">
+            </div>
+
+            <button class="btn btn-primary" id="jumpBtn" onclick="jumpToShortLink()">
+                <span class="btn-text">跳转</span>
+                <span class="btn-loading hidden">
+                    <span class="spinner"></span>
+                    跳转中...
+                </span>
+            </button>
+        </section>
+
+        <!-- 历史记录 -->
+        <section class="card">
+            <div class="card-header-row">
+                <h2 class="card-title">
+                    <span class="card-icon">📋</span>
+                    生成历史
+                </h2>
+                <button class="btn-text-only danger" onclick="clearHistory()">清空</button>
+            </div>
+
+            <div class="history-empty hidden" id="historyEmpty">
+                暂无历史记录
+            </div>
+
+            <div class="history-table-wrap" id="historyTableWrap">
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>短码</th>
+                            <th>原始链接</th>
+                            <th>过期时间</th>
+                            <th>创建时间</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="historyBody"></tbody>
+                </table>
+            </div>
+        </section>
+    </main>
+
+    <!-- Toast 提示 -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,151 @@
+# ============================================================
+# FlashLink 生产环境配置（Docker 部署）
+# 适用环境：2c2g 云服务器，1.6Gi 总内存 / 1.1Gi 可用
+# 所有敏感值通过环境变量注入，不硬编码
+# ============================================================
+
+server:
+  port: ${SERVER_PORT:8080}
+  # 优雅停机：等待当前请求处理完成后再关闭，最长 30s
+  shutdown: graceful
+  tomcat:
+    threads:
+      # 最大工作线程数：2 核 CPU 设 100 即可，过多线程切换反而降低吞吐
+      max: 100
+      # 空闲线程保留数：避免请求低谷时频繁创建/销毁线程
+      min-spare: 10
+    # 最大连接数：超过后新连接进入 accept-count 队列
+    max-connections: 5000
+    # 等待队列长度：当所有工作线程忙时，新请求在此排队
+    accept-count: 100
+    # 连接超时：5 秒内未建立连接则断开
+    connection-timeout: 5000ms
+    # Keep-Alive 超时：长连接最长保持时间
+    keep-alive-timeout: 30000ms
+    # 单连接最大请求数：防止长连接被长期占用
+    max-keep-alive-requests: 100
+  # 开启 Gzip 压缩：减少 JSON 响应体积，CPU 开销可忽略
+  compression:
+    enabled: true
+    mime-types: text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json
+    min-response-size: 1024
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    # MySQL 连接 URL：
+    #   rewriteBatchedStatements=true  → 批量 INSERT 优化（雪花 ID 写入场景）
+    #   cachePrepStmts=true            → 缓存预编译语句，减少 SQL 解析开销
+    #   useServerPrepStmts=true        → 服务端预编译，适合重复执行的短链查询
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:flash_link}?useSSL=true&serverTimezone=Asia/Shanghai&characterEncoding=utf-8&useUnicode=true&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true&cachePrepStmts=true&useServerPrepStmts=true
+    username: ${DB_USERNAME:flashlink}
+    password: ${DB_PASSWORD:}
+    hikari:
+      pool-name: FlashLinkHikariCP
+      # 连接池大小：MySQL 容器 max_connections=80，这里拿 10 个即可
+      maximum-pool-size: 10
+      # 最小空闲连接：保持在 2 个，减少冷启动延迟
+      minimum-idle: 2
+      # 空闲超时：5 分钟未使用则回收
+      idle-timeout: 300000
+      # 连接最大生命周期：20 分钟，比 MySQL wait_timeout 短，避免过期连接
+      max-lifetime: 1200000
+      # 获取连接超时：10 秒后抛出异常触发降级
+      connection-timeout: 10000
+      # 连接存活检测：验证连接有效性
+      connection-test-query: SELECT 1
+      validation-timeout: 3000
+      # 连接泄漏检测：60 秒未归还则打印警告日志
+      leak-detection-threshold: 60000
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      ssl:
+        enabled: ${REDIS_SSL:false}
+      # 超时配置：5 秒内 Redis 无响应则超时
+      timeout: 5000ms
+      connect-timeout: 5000ms
+      lettuce:
+        pool:
+          # 连接池：Redis 容器 maxclients=300，这里拿 20 个即可
+          max-active: 20
+          max-idle: 8
+          min-idle: 4
+          # 获取连接最大等待时间
+          max-wait: 3000ms
+        # 关闭时等待连接归还
+        shutdown-timeout: 2000ms
+      database: ${REDIS_DATABASE:0}
+
+  # 生命周期：每个阶段最多等 30s，避免 Docker 健康检查超时
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+# Swagger / OpenAPI 文档
+springdoc:
+  api-docs:
+    # 生产环境关闭 API 文档，通过环境变量 SWAGGER_ENABLED=true 可临时开启
+    enabled: ${SWAGGER_ENABLED:false}
+  swagger-ui:
+    enabled: ${SWAGGER_ENABLED:false}
+  paths-to-match: /api/**
+
+# Actuator 监控端点
+management:
+  server:
+    # 管理端口独立：8081 不对外暴露，仅 Docker 内部健康检查使用
+    port: ${MANAGEMENT_PORT:8081}
+  endpoints:
+    web:
+      exposure:
+        # 暴露的端点：health 供 K8s/Docker 探针，info 版本信息，metrics 指标，prometheus 抓取
+        include: health,info,metrics,prometheus
+      base-path: /actuator
+  endpoint:
+    health:
+      # 详细健康信息仅对授权用户展示
+      show-details: when-authorized
+      probes:
+        # 开启 K8s 兼容的就绪/存活探针
+        enabled: true
+      group:
+        readiness:
+          # 就绪探针：检查 DB 和 Redis 连通性，两者都 OK 才算就绪
+          include: readinessState,db,redis
+  metrics:
+    export:
+      prometheus:
+        enabled: ${PROMETHEUS_ENABLED:true}
+    tags:
+      application: ${spring.application.name}
+
+# 日志配置
+logging:
+  level:
+    # 框架日志：生产环境只输出 WARN 以上，减少磁盘 IO
+    root: WARN
+    # 业务日志：保留 INFO 级别，便于排查问题
+    personal.cx537.flashlink: INFO
+    org.springframework.web: WARN
+    org.springframework.data.redis: WARN
+    com.baomidou.mybatisplus: WARN
+  file:
+    # 日志路径：Docker 容器内 /app/logs
+    path: ${LOG_PATH:./logs}
+    name: ${LOG_PATH:./logs}/flashlink.log
+  logback:
+    rollingpolicy:
+      # 单个日志文件最大 100MB
+      max-file-size: 100MB
+      # 保留最近 30 天
+      max-history: 30
+      # 日志总大小上限 5GB，超出后删除最旧文件
+      total-size-cap: 5GB
+  pattern:
+    # 日志格式：时间 + 线程 + 级别 + traceId + 类名 + 消息
+    # traceId 用于分布式链路追踪，当前单机部署兼容性保留
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId:-}] %logger{36} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{traceId:-}] %logger{36} - %msg%n"
